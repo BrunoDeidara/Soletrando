@@ -1,0 +1,437 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Assistente de Ortografia</title>
+    <!-- Carrega Tailwind CSS para estilização moderna e responsiva -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Configuração de Fonte -->
+    <style>
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #f0f4f8;
+        }
+        .card-bg {
+            background-color: #ffffff;
+            box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.1), 0 0 10px -5px rgba(0, 0, 0, 0.04);
+        }
+        .mic-icon {
+            animation: pulse 1.5s infinite;
+        }
+        @keyframes pulse {
+            0%, 100% {
+                transform: scale(1);
+                opacity: 1;
+            }
+            50% {
+                transform: scale(1.05);
+                opacity: 0.9;
+            }
+        }
+        .recording {
+            color: #ef4444; /* Vermelho */
+        }
+    </style>
+</head>
+<body class="min-h-screen flex items-center justify-center p-4">
+
+    <!-- Container Principal do Aplicativo -->
+    <div class="w-full max-w-lg card-bg rounded-2xl p-6 md:p-8">
+        <h1 class="text-3xl font-extrabold text-center text-gray-800 mb-6">
+            Soletrando para Crianças
+        </h1>
+        <p class="text-center text-gray-600 mb-8">
+            Clique no microfone, fale uma palavra, e veja a grafia correta!
+        </p>
+
+        <!-- Área de Reconhecimento e Botão do Microfone -->
+        <div class="flex flex-col items-center space-y-6">
+            <button id="recordButton" 
+                    class="bg-blue-600 hover:bg-blue-700 text-white p-6 rounded-full transition duration-300 transform hover:scale-105 active:scale-95 shadow-xl"
+                    onclick="toggleRecognition()">
+                <!-- Ícone do Microfone (lucide-react, simulado com SVG) -->
+                <svg id="micIcon" xmlns="http://www.w3.org/2000/svg" width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="mic-icon">
+                    <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" x2="12" y1="19" y2="22"/>
+                </svg>
+            </button>
+            <p id="statusMessage" class="text-lg font-medium text-gray-700">Aguardando...</p>
+        </div>
+
+        <!-- Área de Resultados -->
+        <div class="mt-8 border-t pt-6">
+            <h2 class="text-xl font-semibold text-gray-700 mb-4">Resultado:</h2>
+            
+            <!-- Palavra Soletada -->
+            <div id="spellingResultContainer" class="min-h-[60px] p-4 bg-blue-50 rounded-lg border-2 border-blue-200">
+                <p id="spelledWord" class="text-2xl font-bold text-blue-800 text-center break-words">...</p>
+            </div>
+            
+            <!-- Descrição/Contexto da API -->
+            <div id="definitionContainer" class="mt-4 p-4 bg-yellow-50 rounded-lg border border-yellow-200 hidden">
+                <h3 class="font-semibold text-yellow-800 mb-2">Dica do Tutor:</h3>
+                <p id="definitionText" class="text-gray-700 italic text-sm">...</p>
+                <div id="sourcesContainer" class="mt-2 text-xs text-gray-500 italic"></div>
+            </div>
+
+            <!-- Indicador de Carregamento -->
+            <div id="loadingIndicator" class="mt-4 text-center hidden">
+                <div class="inline-block h-6 w-6 animate-spin rounded-full border-4 border-solid border-blue-500 border-r-transparent align-[-0.125em] motion-reduce:animate-[spin_1.5s_linear_infinite]" role="status">
+                    <span class="!absolute !-m-px !h-px !w-px !overflow-hidden !whitespace-nowrap !border-0 !p-0 ![clip:rect(0,0,0,0)]">Carregando...</span>
+                </div>
+                <p class="text-sm text-gray-500 mt-2">Corrigindo e buscando a definição...</p>
+            </div>
+            
+            <!-- Mensagem de Erro -->
+            <div id="errorMessage" class="mt-4 p-3 bg-red-100 border border-red-400 text-red-700 rounded hidden">
+                <p id="errorText"></p>
+            </div>
+        </div>
+
+        <!-- Logs e Informações de Debug (opcional) -->
+        <div class="mt-8 pt-4 border-t text-sm text-gray-500">
+            <h3 class="font-semibold mb-2">Histórico (Firebase):</h3>
+            <ul id="historyList" class="max-h-24 overflow-y-auto bg-gray-50 p-2 rounded">
+                <li class="text-xs">Nenhuma palavra registrada ainda.</li>
+            </ul>
+        </div>
+    </div>
+
+    <!-- Firebase SDKs -->
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, doc, addDoc, onSnapshot, collection, query, serverTimestamp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        import { setLogLevel } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        // Configuração e Variáveis Globais (fornecidas pelo ambiente Canvas)
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+        const firebaseConfig = JSON.parse(typeof __firebase_config !== 'undefined' ? __firebase_config : '{}');
+        const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+        
+        // Expor variáveis globais no escopo do window para acesso da lógica do app
+        window.db = null;
+        window.auth = null;
+        window.userId = null;
+        window.isAuthReady = false;
+
+        setLogLevel('debug'); // Ativar logs do Firebase
+
+        if (Object.keys(firebaseConfig).length > 0) {
+            const app = initializeApp(firebaseConfig);
+            window.db = getFirestore(app);
+            window.auth = getAuth(app);
+
+            // 1. Configurar o estado de autenticação
+            onAuthStateChanged(window.auth, async (user) => {
+                if (user) {
+                    window.userId = user.uid;
+                } else {
+                    // Tentativa de login anônimo se o token inicial falhar ou não existir
+                    try {
+                        await signInAnonymously(window.auth);
+                        window.userId = window.auth.currentUser.uid;
+                    } catch (error) {
+                        console.error("Erro ao fazer login anônimo:", error);
+                    }
+                }
+                window.isAuthReady = true;
+                console.log("Autenticação Firebase Pronta. userId:", window.userId);
+                setupHistoryListener();
+            });
+
+            // 2. Usar o token personalizado se disponível
+            if (initialAuthToken) {
+                try {
+                    await signInWithCustomToken(window.auth, initialAuthToken);
+                } catch (error) {
+                    console.warn("Erro ao usar token personalizado. Continuando com onAuthStateChanged.", error);
+                }
+            }
+        } else {
+            console.error("Configuração do Firebase ausente.");
+            window.isAuthReady = true; // Permite que o app continue (sem Firebase)
+        }
+
+        // Função para configurar o listener de histórico (apenas para demonstrar o uso do Firebase)
+        function setupHistoryListener() {
+            // Garante que a autenticação e o userId estejam prontos antes de tentar ler dados públicos.
+            if (!window.isAuthReady || !window.db || !window.userId) return;
+
+            const path = `artifacts/${appId}/public/data/spelling_words`;
+            const q = query(collection(window.db, path));
+
+            onSnapshot(q, (snapshot) => {
+                const historyList = document.getElementById('historyList');
+                historyList.innerHTML = '';
+                if (snapshot.empty) {
+                    historyList.innerHTML = '<li class="text-xs">Nenhuma palavra registrada ainda.</li>';
+                    return;
+                }
+
+                snapshot.docs.sort((a, b) => {
+                    // Ordenar por timestamp (o mais novo primeiro, se o campo existir)
+                    const timeA = a.data().timestamp?.toMillis() || 0;
+                    const timeB = b.data().timestamp?.toMillis() || 0;
+                    return timeB - timeA;
+                }).forEach(doc => {
+                    const data = doc.data();
+                    const li = document.createElement('li');
+                    li.className = 'text-xs text-gray-600 truncate';
+                    li.textContent = data.word || 'Palavra Desconhecida';
+                    historyList.appendChild(li);
+                });
+            }, (error) => {
+                console.error("Erro ao ouvir o histórico do Firestore:", error);
+            });
+        }
+    </script>
+
+    <!-- Lógica do Aplicativo e Chamada à API -->
+    <script>
+        // Variáveis de estado
+        let isRecording = false;
+        let recognition = null;
+        
+        // Elementos DOM
+        const recordButton = document.getElementById('recordButton');
+        const statusMessage = document.getElementById('statusMessage');
+        const micIcon = document.getElementById('micIcon');
+        const spelledWordElement = document.getElementById('spelledWord');
+        const definitionContainer = document.getElementById('definitionContainer');
+        const definitionTextElement = document.getElementById('definitionText');
+        const sourcesContainer = document.getElementById('sourcesContainer');
+        const loadingIndicator = document.getElementById('loadingIndicator');
+        const errorMessage = document.getElementById('errorMessage');
+        const errorText = document.getElementById('errorText');
+
+        // Configuração da API
+        const apiKey = "";
+        const apiUrlBase = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${apiKey}`;
+
+        // Função utilitária para exibir erros
+        function displayError(message) {
+            errorMessage.classList.remove('hidden');
+            errorText.textContent = message;
+            loadingIndicator.classList.add('hidden');
+        }
+
+        // Função para salvar a palavra no Firestore
+        async function saveWordToFirestore(word) {
+            if (!window.db || !window.isAuthReady || !window.userId) {
+                console.warn("Firestore não pronto para salvar o histórico.");
+                return;
+            }
+
+            try {
+                const path = `artifacts/${appId}/public/data/spelling_words`;
+                await addDoc(collection(window.db, path), {
+                    userId: window.userId,
+                    word: word,
+                    timestamp: serverTimestamp() // Importado do firebase-firestore
+                });
+                console.log("Palavra salva no histórico do Firestore:", word);
+            } catch (e) {
+                console.error("Erro ao adicionar documento ao Firestore:", e);
+            }
+        }
+
+
+        // Função principal para iniciar/parar o reconhecimento de voz
+        function toggleRecognition() {
+            if (isRecording) {
+                recognition.stop();
+                isRecording = false;
+                updateUIForRecording(false);
+                return;
+            }
+
+            // Limpar resultados anteriores
+            spelledWordElement.textContent = '...';
+            definitionContainer.classList.add('hidden');
+            errorMessage.classList.add('hidden');
+
+            if (!('webkitSpeechRecognition' in window) && !('SpeechRecognition' in window)) {
+                displayError('Seu navegador não suporta a API de Reconhecimento de Fala. Use Chrome ou Edge.');
+                return;
+            }
+
+            // Inicialização do Reconhecimento de Fala
+            recognition = new (window.webkitSpeechRecognition || window.SpeechRecognition)();
+            recognition.lang = 'pt-BR';
+            recognition.interimResults = false;
+            recognition.maxAlternatives = 1;
+
+            recognition.onstart = () => {
+                isRecording = true;
+                updateUIForRecording(true);
+            };
+
+            recognition.onresult = (event) => {
+                const speechResult = event.results[0][0].transcript;
+                console.log('Voz Reconhecida:', speechResult);
+                statusMessage.textContent = 'Voz Reconhecida! Processando...';
+                isRecording = false;
+                updateUIForRecording(false);
+                
+                // Chamada à API para validação e enriquecimento
+                callGeminiAPI(speechResult.trim().toLowerCase());
+            };
+
+            recognition.onerror = (event) => {
+                console.error('Erro de Reconhecimento de Fala:', event.error);
+                let message = 'Ocorreu um erro no reconhecimento de voz.';
+                if (event.error === 'not-allowed') {
+                    message = 'Acesso ao microfone negado. Por favor, permita o acesso.';
+                } else if (event.error === 'no-speech') {
+                    message = 'Nenhuma fala detectada. Tente novamente.';
+                }
+                displayError(message);
+                isRecording = false;
+                updateUIForRecording(false);
+            };
+
+            recognition.onend = () => {
+                if (isRecording) {
+                     // Se onend for chamado e ainda estiver gravando, significa que foi parado manualmente.
+                     // Se a chamada à API já foi feita (dentro de onresult), não precisamos fazer nada aqui.
+                    isRecording = false;
+                    updateUIForRecording(false);
+                }
+                if (statusMessage.textContent === 'Gravando...') {
+                    statusMessage.textContent = 'Reconhecimento encerrado. Tente novamente.';
+                }
+            };
+
+            try {
+                recognition.start();
+            } catch (e) {
+                displayError("Erro ao iniciar o microfone. Verifique as permissões.");
+                console.error(e);
+            }
+        }
+
+        // Atualização da interface do usuário
+        function updateUIForRecording(recording) {
+            if (recording) {
+                recordButton.classList.add('recording');
+                micIcon.classList.add('text-red-500');
+                micIcon.classList.remove('text-white');
+                recordButton.classList.remove('bg-blue-600', 'hover:bg-blue-700');
+                recordButton.classList.add('bg-red-500', 'hover:bg-red-600');
+                statusMessage.textContent = 'Gravando... Fale a palavra.';
+            } else {
+                recordButton.classList.remove('recording');
+                micIcon.classList.remove('text-red-500');
+                micIcon.classList.add('text-white');
+                recordButton.classList.remove('bg-red-500', 'hover:bg-red-600');
+                recordButton.classList.add('bg-blue-600', 'hover:bg-blue-700');
+                statusMessage.textContent = 'Clique para Falar';
+            }
+        }
+        
+        // Estrutura do resultado da API para JSON (Grounded Content + Explicação)
+        const responseSchema = {
+            type: "OBJECT",
+            properties: {
+                "spelling": { "type": "STRING", "description": "A palavra reconhecida e soletra com a grafia correta." },
+                "explanation": { "type": "STRING", "description": "Uma frase simples e educativa, em português, sobre a palavra (ex: O que ela significa, ou um exemplo de uso em uma frase fácil)." }
+            },
+            required: ["spelling", "explanation"]
+        };
+
+        // Função para chamar o Gemini API com Exponential Backoff
+        async function callGeminiAPI(word, retries = 3) {
+            loadingIndicator.classList.remove('hidden');
+            errorMessage.classList.add('hidden');
+            
+            const systemPrompt = `Você é um professor de português, amigável e focado em educação infantil. Sua tarefa é receber uma palavra, confirmar sua grafia correta e fornecer uma explicação simples e educativa em português para uma criança. A resposta deve seguir o JSON Schema fornecido, usando a fonte de pesquisa para garantir a precisão ortográfica.`;
+            const userQuery = `A palavra que o aluno falou é: "${word}". Confirme a ortografia correta e forneça uma explicação fácil.`;
+
+            const payload = {
+                contents: [{ parts: [{ text: userQuery }] }],
+                tools: [{ "google_search": {} }], // Usar pesquisa para garantir a grafia
+                systemInstruction: { parts: [{ text: systemPrompt }] },
+                config: {
+                    responseMimeType: "application/json",
+                    responseSchema: responseSchema
+                }
+            };
+
+            for (let i = 0; i < retries; i++) {
+                try {
+                    const response = await fetch(apiUrlBase, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(payload)
+                    });
+
+                    if (!response.ok) {
+                         // Lança erro para tentar novamente (exceto 4xx que podem ser tratados fora do loop)
+                        if (response.status >= 500) {
+                            throw new Error(`Erro de servidor: ${response.status}`);
+                        } else {
+                            // Erros 4xx são geralmente irrecuperáveis, sair
+                            const errorData = await response.json();
+                            throw new Error(`Erro da API (Irrecuperável): ${errorData.error.message || response.statusText}`);
+                        }
+                    }
+
+                    const result = await response.json();
+                    
+                    loadingIndicator.classList.add('hidden');
+
+                    const candidate = result.candidates?.[0];
+
+                    if (candidate && candidate.content?.parts?.[0]?.text) {
+                        const jsonString = candidate.content.parts[0].text;
+                        const data = JSON.parse(jsonString);
+
+                        // 1. Exibir a palavra soletada e explicação
+                        spelledWordElement.textContent = data.spelling || 'Palavra não encontrada';
+                        definitionTextElement.textContent = data.explanation || 'Não foi possível obter a explicação.';
+                        definitionContainer.classList.remove('hidden');
+                        
+                        // 2. Extrair e exibir fontes (opcional)
+                        let sources = [];
+                        const groundingMetadata = candidate.groundingMetadata;
+                        sourcesContainer.innerHTML = '';
+                        if (groundingMetadata && groundingMetadata.groundingAttributions) {
+                            sources = groundingMetadata.groundingAttributions
+                                .map(attribution => ({
+                                    uri: attribution.web?.uri,
+                                    title: attribution.web?.title,
+                                }))
+                                .filter(source => source.uri && source.title);
+                            
+                            if (sources.length > 0) {
+                                sourcesContainer.innerHTML = 'Fontes de pesquisa: ' + sources.map(s => `<a href="${s.uri}" target="_blank" class="text-blue-500 hover:underline">${s.title}</a>`).join(', ');
+                            }
+                        }
+                        
+                        // 3. Salvar no Firestore
+                        saveWordToFirestore(data.spelling);
+                        return; // Sucesso, sair da função
+                    } else {
+                        throw new Error("Resposta da API vazia ou inesperada.");
+                    }
+                } catch (error) {
+                    console.error(`Tentativa ${i + 1} falhou:`, error);
+                    if (i === retries - 1) {
+                        displayError(`Falha ao processar a palavra após ${retries} tentativas: ${error.message}`);
+                        return; // Falha total após as retentativas
+                    }
+                    // Espera exponencial (1s, 2s, 4s...)
+                    await new Promise(resolve => setTimeout(resolve, Math.pow(2, i) * 1000));
+                }
+            }
+        }
+
+        // Inicializa a UI
+        window.onload = () => {
+             updateUIForRecording(false);
+             spelledWordElement.textContent = 'Clique para começar!';
+        };
+    </script>
+</body>
+</html>
